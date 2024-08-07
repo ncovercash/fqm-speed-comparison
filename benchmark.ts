@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { writeFile } from 'fs';
 import kyBase from 'ky-universal';
 import { promisify } from 'util';
