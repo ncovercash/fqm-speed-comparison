@@ -1,29 +1,25 @@
-# s3-speed-comparison
+# fqm-speed-comparison
 
-This script runs a benchmark against a local MinIO server to compare the speeds
-of uploads with and without multipart upload; additionally, it will compare the
-speeds of multipart uploads with different chunk sizes.
+This script runs a series of benchmarks against instance(s) of [mod-fqm-manager](https://github.com/folio-org/mod-fqm-manager) to compare speeds across versions and time.
 
 ## Requirements
 
-- S3-like storage and credentials
-- At least 15 GB of allocated storage in the S3 instance
-- Approximately eight minutes to let it cook (depending on your bandwidth/server)
+- A running instance of mod-fqm-manager
 
 ## Usage
 
-First, generate access keys for your MinIO instance. Then, run:
+Run:
 
 ```sh
-ACCESS_KEY=ABCDEF SECRET_KEY=123456 ENDPOINT=http://localhost:9000 yarn benchmark
+USER=ABCDEF PASSWORD=123456 TENANT=fs09000000 OKAPI_URL=http://okapi:9130 bun benchmark
 ```
 
-If these are not specified, the script will default to `http://localhost:9000` with credentials `minioadmin`:`minioadmin`
+Once you've run this, `results.json` will have been created.
 
-Once you've run this, `results.json` will have been created. To visualize the data, run:
+<!-- To visualize the data, run:
 
 ```sh
-yarn chart results.json
+bun chart results.json
 ```
 
-This will print lots of data as well as generate a folder `results/` with a bunch of charts and tables.
+This will print lots of data as well as generate a folder `results/` with a bunch of charts and tables. -->

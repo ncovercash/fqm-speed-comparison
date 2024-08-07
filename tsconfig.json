@@ -5,10 +5,11 @@
     "esModuleInterop": true,
     "jsx": "react",
     "lib": ["esnext", "dom"],
-    "module": "es2020",
+    "module": "ESNext",
     "moduleResolution": "node",
     "strict": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "target": "ESNext"
   },
   "ts-node": {
     "esm": true
