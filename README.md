@@ -8,18 +8,24 @@ This script runs a series of benchmarks against instance(s) of [mod-fqm-manager]
 
 ## Usage
 
-Run:
+To benchmark, run the following (`QUERY_VERSION` refers to the index used in the `queries.json5` file):
 
 ```sh
-USER=ABCDEF PASSWORD=123456 TENANT=fs09000000 OKAPI_URL=http://okapi:9130 bun benchmark
+USER=ABCDEF \
+PASSWORD=123456 \
+TENANT=fs09000000 \
+OKAPI_URL=http://okapi:9130 \
+QUERY_VERSION=1 \
+LABEL=LABEL_HERE \
+bun benchmark.ts
 ```
 
-Once you've run this, `results.json` will have been created.
+Once you've run this, `LABEL_HERE.json` and `LABEL_HERE-description.json` will have been created in the `raw-results` directory.
 
-<!-- To visualize the data, run:
+Once all datasets are ready, run:
 
 ```sh
-bun chart results.json
+bun chart.ts key1 key2 key3 ...
 ```
 
-This will print lots of data as well as generate a folder `results/` with a bunch of charts and tables. -->
+This will create a report `results.html`.

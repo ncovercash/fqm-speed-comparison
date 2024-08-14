@@ -1,4 +1,5 @@
 import { writeFile } from 'fs';
+import json5 from 'json5';
 import kyBase from 'ky-universal';
 import { promisify } from 'util';
 
@@ -6,6 +7,11 @@ const USERNAME = process.env.USER ?? 'folio';
 const PASSWORD = process.env.PASSWORD ?? 'folio';
 const TENANT = process.env.TENANT ?? 'fs09000000';
 const OKAPI_URL = process.env.OKAPI_URL ?? 'http://localhost:9130';
+const LABEL = process.env.LABEL ?? 'results';
+const QUERY_VERSION = +(process.env.QUERY_VERSION ?? 0);
+
+const resultsFile = `raw-results/${LABEL}.json`;
+const descriptionsFile = `raw-results/${LABEL}-descriptions.json`;
 
 async function auth(): Promise<string> {
   return (
@@ -26,13 +32,85 @@ async function auth(): Promise<string> {
 const ky = kyBase.extend({
   prefixUrl: OKAPI_URL,
   headers: {
+    accept: 'application/json',
+    'content-type': 'application/json',
     'x-okapi-tenant': TENANT,
     'x-okapi-token': await auth(),
   },
 });
 
-const measures: Record<string, number[]> = {};
-const descriptions: Record<string, string> = {};
+function getThisVersionOf<T>(arr: T[]): T {
+  return arr[Math.min(QUERY_VERSION, arr.length - 1)];
+}
+
+async function getQueries(includeEachFieldsVariant: boolean): Promise<
+  {
+    label: string;
+    entityTypeId: string;
+    query: unknown;
+    fields: string[];
+  }[]
+> {
+  const queries: Record<
+    string,
+    {
+      entityType: string[];
+      queries: { label: string; queries: unknown[] }[];
+      fields: { label: string; fields: string[][] }[];
+    }
+  > = await json5.parse(await Bun.file('queries.json5').text());
+
+  const fullSet: {
+    label: string;
+    entityTypeId: string;
+    query: unknown;
+    fields: string[];
+  }[] = [];
+
+  Object.entries(queries).forEach(
+    ([baseLabel, { entityType, queries, fields }]) => {
+      const entityTypeId = getThisVersionOf(entityType);
+
+      queries.forEach((queryList) =>
+        fields
+          .slice(0, includeEachFieldsVariant ? fields.length : 1)
+          .forEach((fieldset) => {
+            const label = [baseLabel, queryList.label, fieldset.label].join(
+              '|'
+            );
+
+            const query = getThisVersionOf(queryList.queries);
+            const queryFields = getThisVersionOf(fieldset.fields);
+
+            if (!query || !queryFields || !entityTypeId) {
+              return;
+            }
+
+            fullSet.push({
+              label,
+              entityTypeId,
+              query,
+              fields: queryFields,
+            });
+          })
+      );
+    }
+  );
+
+  return fullSet;
+}
+
+const queries = await getQueries(false);
+const queriesWithFields = await getQueries(true);
+
+let measures: Record<string, number[]> = {};
+if (await Bun.file(resultsFile).exists()) {
+  measures = JSON.parse(await Bun.file(resultsFile).text());
+}
+let descriptions: Record<string, string> = {};
+if (await Bun.file(descriptionsFile).exists()) {
+  descriptions = JSON.parse(await Bun.file(descriptionsFile).text());
+}
 
 async function measure<T, R>(
   name: string,
@@ -40,6 +118,7 @@ async function measure<T, R>(
     | {
         setup: () => Promise<T> | T;
         fn: (res: Awaited<T>) => Promise<R> | R;
+        teardown: (res: Awaited<T>) => Promise<void> | void;
       }
     | {
         fn: () => Promise<R> | R;
@@ -55,12 +134,18 @@ async function measure<T, R>(
 
   let res: Awaited<T> | undefined = undefined;
   if ('setup' in run) {
+    process.stdout.clearLine(0);
+    process.stdout.cursorTo(0);
+    process.stdout.write(`${name}: setting up`);
     res = await run.setup();
+    process.stdout.clearLine(0);
+    process.stdout.cursorTo(0);
+    process.stdout.write(`${name}: setup complete`);
   }
 
   let description: string | undefined = undefined;
 
-  while (measures[name].length < 3 || Date.now() - overallStart < maxTimeMs) {
+  while (measures[name].length < 5 || Date.now() - overallStart < maxTimeMs) {
     const start = Date.now();
     let result: R;
     if ('setup' in run) {
@@ -85,29 +170,123 @@ async function measure<T, R>(
     );
   }
 
+  if ('teardown' in run) {
+    process.stdout.clearLine(0);
+    process.stdout.cursorTo(0);
+    process.stdout.write(`${name}: tearing down`);
+    await run.teardown(res as Awaited<T>);
+    process.stdout.clearLine(0);
+    process.stdout.cursorTo(0);
+    process.stdout.write(`${name}: teardown complete`);
+  }
+
   descriptions[name] = description ?? '';
 
   process.stdout.clearLine(0);
   process.stdout.cursorTo(0);
   console.log(
-    `${name}: approx ${(
+    `${name} (${description}): approx ${(
       measures[name].reduce((a, b) => a + b, 0) / measures[name].length
     ).toFixed(2)}ms (${measures[name].length} samples)`
   );
 
-  await promisify(writeFile)('results.json', JSON.stringify(measures));
-  await promisify(writeFile)(
-    'results-descriptions.json',
-    JSON.stringify(descriptions)
-  );
+  await promisify(writeFile)(resultsFile, JSON.stringify(measures));
+  await promisify(writeFile)(descriptionsFile, JSON.stringify(descriptions));
 }
 
-await measure(
-  'get-entity-types',
-  {
-    fn: () => ky.get('entity-types'),
-    describe: async (response) =>
-      `${(await response.json<never[]>()).length} entities`,
-  },
-  5000
-);
+async function measureEntityTypes() {
+  const entityTypes = await ky
+    .get('entity-types')
+    .json<{ id: string; label: string }[]>();
+
+  await measure(
+    'get-all-entity-types',
+    {
+      fn: () => ky.get('entity-types'),
+      describe: async (response) =>
+        `${(await response.json<never[]>()).length} entities`,
+    },
+    5000
+  );
+  for (const { id, label } of entityTypes) {
+    await measure(
+      `get-entity-type-${label.toLowerCase()}`,
+      {
+        fn: () => ky.get(`entity-types/${id}`),
+        describe: () => '',
+      },
+      1000
+    );
+  }
+}
+
+async function measureRefreshes() {
+  async function waitForRefresh(listId: string) {
+    return new Promise((resolve, reject) => {
+      const checkIfDone = async () => {
+        try {
+          const response = await (await ky.get(`lists/${listId}`)).json<any>();
+          if (
+            response.successRefresh?.status === 'SUCCESS' &&
+            !('inProgressRefresh' in response)
+          ) {
+            resolve(response.successRefresh.recordsCount);
+          } else if ('failedRefresh' in response) {
+            reject(new Error(JSON.stringify(response.failedRefresh, null, 2)));
+          } else {
+            setTimeout(checkIfDone, 50);
+          }
+        } catch (e) {
+          console.error(e);
+          setTimeout(checkIfDone, 0);
+        }
+      };
+      checkIfDone();
+    });
+  }
+
+  for (const { label, entityTypeId, query, fields } of queries) {
+    // shouldn't need this...
+    delete (query as { _version?: string })._version;
+
+    await measure(
+      label + '|total',
+      {
+        setup: async () => {
+          const list = await (
+            await ky.post('lists', {
+              json: {
+                name: `benchmark-${label}`,
+                description: JSON.stringify(
+                  { label, entityTypeId, query, fields },
+                  null,
+                  2
+                ),
+                entityTypeId,
+                fqlQuery: JSON.stringify(query),
+                fields,
+                isActive: true,
+                isPrivate: false,
+              },
+            })
+          ).json<any>();
+
+          return list;
+        },
+        fn: async (list) => {
+          await ky.post(`lists/${list.id}/refresh`);
+
+          return await waitForRefresh(list.id);
+        },
+        describe: (count) => `${count} records`,
+        teardown: async (list) => {
+          await ky.delete(`lists/${list.id}`);
+        },
+      },
+      300000
+    );
+  }
+}
+
+// await measureEntityTypes();
+await measureRefreshes();
