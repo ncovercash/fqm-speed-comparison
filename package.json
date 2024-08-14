@@ -8,21 +8,24 @@
   "private": false,
   "type": "module",
   "devDependencies": {
-    "@types/fast-stats": "^0.0.32",
-    "@types/node": "^20.14.14",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.5.4"
+    "@types/fast-stats": "^0.0.35",
+    "@types/node": "^22.1.0",
+    "typescript": "^5.5.4",
+    "@types/bun": "latest"
   },
   "scripts": {
-    "benchmark": "ts-node benchmark.ts",
-    "chart": "ts-node chart.ts"
+    "benchmark": "benchmark.ts",
+    "chart": "chart.ts"
   },
   "dependencies": {
+    "@sgratzl/chartjs-chart-boxplot": "^4.4.1",
     "chart.js": "^4.4.3",
+    "chartjs-chart-error-bars": "^4.4.1",
     "chartjs-to-image": "^1.2.2",
-    "fast-stats": "^0.0.6",
-    "ky": "^0.33.3",
-    "ky-universal": "^0.11.0",
+    "fast-stats": "^0.0.7",
+    "json5": "^2.2.3",
+    "ky": "^1.5.0",
+    "ky-universal": "^0.12.0",
     "table": "^6.8.2"
   }
 }
