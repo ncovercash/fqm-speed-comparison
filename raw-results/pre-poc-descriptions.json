@@ -24,5 +24,14 @@
   "users|is-active|": "90333 records",
   "users|patron-group-id-nin|": "90677 records",
   "users|patron-group-in|": "0 records",
-  "users|preferred-contact-type-nin|": "90020 records"
+  "users|preferred-contact-type-nin|": "90020 records",
+  "get-all-entity-types": "8 entities",
+  "get-entity-type-holdings": "",
+  "get-entity-type-instances": "",
+  "get-entity-type-items": "",
+  "get-entity-type-loans": "",
+  "get-entity-type-organizations — contact info": "",
+  "get-entity-type-organizations — vendor info": "",
+  "get-entity-type-purchase order lines": "",
+  "get-entity-type-users": ""
 }

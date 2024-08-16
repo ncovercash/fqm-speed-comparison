@@ -1,691 +1,502 @@
-import { ChartConfiguration, ChartOptions } from 'chart.js';
-import ChartJSImage from 'chartjs-to-image';
+import {
+  BoxAndWiskers,
+  BoxPlotController,
+} from '@sgratzl/chartjs-chart-boxplot';
+import {
+  CategoryScale,
+  Chart,
+  ChartConfiguration,
+  LinearScale,
+} from 'chart.js';
+import { randomUUID } from 'crypto';
 import { Stats } from 'fast-stats';
-import { mkdirSync, readFileSync } from 'fs';
-import { writeFile } from 'fs/promises';
-import { resolve } from 'path';
-import { table } from 'table';
+import { readFileSync } from 'fs';
+import json5 from 'json5';
 
-type TraditionalTestSize =
-  | '512k'
-  | '5m'
-  | '10m'
-  | '25m'
-  | '50m'
-  | '100m'
-  | '1g'
-  | '1.5g';
-type MultipartTestSize = '512k' | '5m' | '10m' | '25m' | '50m' | '100m';
-type MultipartBigTestSize = '1g' | '2g' | '5g';
-type MultipartChunkSize = '5m' | '25m' | '50m' | '100m';
-type MultipartBigChunkSize = MultipartChunkSize | '200m' | '500m';
+Chart.register(BoxPlotController, BoxAndWiskers, LinearScale, CategoryScale);
 
-type Key =
-  | 'get-traditional-presigned-url'
-  | 'get-multipart-presigned-url-only'
-  | 'initiate-multipart-only'
-  | `traditional-upload-${TraditionalTestSize}`
-  | `upload-multipart-total-${MultipartTestSize}-${MultipartChunkSize}`
-  | `upload-multipart-upload-${MultipartTestSize}-${MultipartChunkSize}`
-  | `upload-multipart-complete-${MultipartTestSize}-${MultipartChunkSize}`
-  | `upload-multipart-total-${MultipartBigTestSize}-${MultipartBigChunkSize}`
-  | `upload-multipart-upload-${MultipartBigTestSize}-${MultipartBigChunkSize}`
-  | `upload-multipart-complete-${MultipartBigTestSize}-${MultipartBigChunkSize}`;
+const COLORS = ['#f007', '#0f07', '#00f7'];
 
-const basicTableConfig = {
-  drawHorizontalLine: (index: number, size: number) =>
-    index === 0 || index === 1 || index === size,
-};
-const outputTableConfig = {
-  border: {
-    topBody: '',
-    topJoin: '',
-    topLeft: '',
-    topRight: '',
-    bottomBody: '',
-    bottomJoin: '',
-    bottomLeft: '',
-    bottomRight: '',
-    bodyLeft: '|',
-    bodyRight: '|',
-    bodyJoin: '|',
-    joinBody: '-',
-    joinLeft: '|',
-    joinRight: '|',
-    joinJoin: '|',
-  },
-  drawHorizontalLine: (index: number) => index === 1,
-};
+const keys = Bun.argv.slice(2);
+const results: Record<string, Record<string, number[]>> = {};
+const descriptions: Record<string, Record<string, string>> = {};
+keys
+  .map((f) => [f, readFileSync(`raw-results/${f}.json`, 'utf8')] as const)
+  .map(([f, s]) => [f, JSON.parse(s) as Record<string, number[]>] as const)
+  .forEach(([f, r]) => (results[f] = r));
+keys
+  .map(
+    (f) =>
+      [f, readFileSync(`raw-results/${f}-descriptions.json`, 'utf8')] as const
+  )
+  .map(([f, s]) => [f, JSON.parse(s) as Record<string, string>] as const)
+  .forEach(([f, r]) => (descriptions[f] = r));
 
-const chart = new ChartJSImage();
-chart.setChartJsVersion('4.3.0');
-chart.setWidth(800);
-chart.setHeight(600);
+const metrics = [
+  ...new Set<string>([
+    ...Object.values(results).flatMap((o) => Object.keys(o)),
+  ]),
+].toSorted((a, b) => a.localeCompare(b));
 
-const results = JSON.parse(readFileSync(process.argv[2], 'utf8')) as Record<
-  Key,
-  number[]
->;
+const queries: Record<
+  string,
+  {
+    entityType: string[];
+    queries: { label: string; queries: unknown[] }[];
+    fields: { label: string; fields: string[][] }[];
+  }
+> = await json5.parse(await Bun.file('queries.json5').text());
 
-const dir = resolve(process.cwd(), 'results');
-console.log(`Making results directory ${dir}`);
-mkdirSync(dir, { recursive: true });
-
-async function renderChartToFile(options: ChartConfiguration, name: string) {
-  chart.setConfig(options);
-  console.log(`Rendering ${name}`);
-  await chart.toFile(resolve(dir, name));
+function parseMetricLabel(label: string) {
+  const [entityType, query, fields, category] = label.split('|');
+  return { entityType, query, fields, category };
+}
+function getDescriptionMetricKey(label: string) {
+  const parsed = parseMetricLabel(label);
+  return `${parsed.entityType}|${parsed.query}|${parsed.fields}`;
 }
 
-async function processBasicStats() {
-  console.log('Presigned URL statistics:');
-
-  const values = {
-    presignedTraditional: new Stats().push(
-      results['get-traditional-presigned-url']
-    ),
-    presignedMultipart: new Stats().push(
-      results['get-multipart-presigned-url-only']
-    ),
-    multipartInitiate: new Stats().push(results['initiate-multipart-only']),
-  };
-
-  const data = [
-    ['Test name', 'Mean (ms)', '± (ms)'],
-    [
-      'Get traditional presigned URL',
-      values.presignedTraditional.amean().toFixed(3),
-      values.presignedTraditional.stddev().toFixed(3),
-    ],
-    [
-      'Get multipart presigned URL',
-      values.presignedMultipart.amean().toFixed(3),
-      values.presignedMultipart.stddev().toFixed(3),
-    ],
-    [
-      'Initiate multipart upload',
-      values.multipartInitiate.amean().toFixed(3),
-      values.multipartInitiate.stddev().toFixed(3),
-    ],
-  ];
-
-  console.log(
-    table(data, {
-      ...basicTableConfig,
-      columns: [
-        { alignment: 'left' },
-        { alignment: 'right' },
-        { alignment: 'right' },
-      ],
-    })
-  );
-  await writeFile(
-    resolve(dir, 'basic-stats.md'),
-    table(data, outputTableConfig)
-      .replaceAll('--|', '--:|')
-      .replace('--:|', '--|')
-  );
-}
-
-async function fullUploadStats() {
-  console.log('Upload type statistics:');
-
-  const byType: Record<
-    'traditional' | `multipart-${MultipartBigChunkSize}-chunks`,
-    Partial<
-      Record<
-        TraditionalTestSize | MultipartTestSize | MultipartBigTestSize,
-        number
-      >
-    >
-  > = {
-    traditional: {},
-    'multipart-5m-chunks': {},
-    'multipart-25m-chunks': {},
-    'multipart-50m-chunks': {},
-    'multipart-100m-chunks': {},
-    'multipart-200m-chunks': {},
-    'multipart-500m-chunks': {},
-  };
-
-  for (const key in results) {
-    if (key.startsWith('traditional-upload')) {
-      const size = key.split('-')[2] as TraditionalTestSize;
-      byType.traditional[size] = new Stats().push(results[key as Key]).amean();
+function renderChart(options: ChartConfiguration, rows = keys.length): string {
+  const id = randomUUID();
+  return `
+  <div style="height: ${rows * 50}px; width: 800px; position: relative;">
+    <canvas id="${id}"></canvas>
+  </div>
+  <script>
+    new Chart(document.getElementById("${id}").getContext("2d"), ${JSON.stringify(
+    {
+      ...options,
+      options: { ...options.options, aspectRatio: 800 / (rows * 50) },
     }
-    if (key.startsWith('upload-multipart-total')) {
-      const size = key.split('-')[3] as
-        | MultipartTestSize
-        | MultipartBigTestSize;
-      const chunkSize = key.split('-')[4] as MultipartBigChunkSize;
-      byType[`multipart-${chunkSize}-chunks`][size] = new Stats()
-        .push(...results[key as Key])
-        .amean();
+  )});
+  </script>`;
+}
+
+async function getSummaryTable() {
+  const summaryStats: Record<
+    string,
+    {
+      min: Stats;
+      median: Stats;
+      max: Stats;
+      mean: Stats;
+      stddev: Stats;
     }
-  }
+  > = keys.reduce((acc, key) => {
+    return {
+      ...acc,
+      [key]: {
+        min: new Stats(),
+        median: new Stats(),
+        max: new Stats(),
+        mean: new Stats(),
+        stddev: new Stats(),
+      },
+    };
+  }, {});
+  return `
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Test case</th>
+        <th scope="col">Version</th>
+        <th scope="col" class="nerd"># samples</th>
+        <th scope="col" class="nerd">min</th>
+        <th scope="col">median</th>
+        <th scope="col" class="nerd">max</th>
+        <th scope="col">mean</th>
+        <th scope="col" class="nerd">stddev</th>
+        <th scope="col">MOE</th>
+        <th scope="col">∆ (median)</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${metrics
+        .map(
+          (m, metricIndex) => `
+        <tr style="${
+          metricIndex % 2 === 0 ? '' : 'background-color: #eee;'
+        }" data-metric="${m}">
+          <th scope="row" rowspan="${
+            keys.length
+          }"><a href="#${m}">${m}</a><br />${[
+            ...new Set(
+              Object.values(descriptions).map(
+                (v) => v[getDescriptionMetricKey(m)]
+              )
+            ),
+          ].join('<br />')}</th>
+          ${keys
+            .map((k, keyIndex) => {
+              if (!results[k][m]) {
+                return `
+                  <th scope="row" style="font-family: monospace">${k}</th>
+                  <td class="nerd">-</td>
+                  <td class="nerd">-</td>
+                  <td>-</td>
+                  <td class="nerd">-</td>
+                  <td>-</td>
+                  <td class="nerd">-</td>
+                  <td>-</td>
+                  <td>-</td>
+                `;
+              }
+              const stats = new Stats().push(
+                ...results[k][m].map((x) => x / 1000)
+              );
+              const prevStats =
+                keyIndex === 0 || !results[keys[keyIndex - 1]][m]
+                  ? null
+                  : new Stats().push(
+                      ...results[keys[keyIndex - 1]][m].map((x) => x / 1000)
+                    );
 
-  function dataFromRow(
-    row: Partial<
-      Record<
-        TraditionalTestSize | MultipartTestSize | MultipartBigTestSize,
-        number
-      >
-    >
-  ) {
-    return [
-      row['512k'],
-      row['5m'],
-      row['10m'],
-      row['25m'],
-      row['50m'],
-      row['100m'],
-      row['1g'],
-      row['1.5g'],
-      row['2g'],
-      row['5g'],
-    ].map((v) => v ?? null);
-  }
+              if (keys.every((k) => m in results[k])) {
+                summaryStats[k].min.push(stats.min!);
+                summaryStats[k].median.push(stats.percentile(50));
+                summaryStats[k].max.push(stats.max!);
+                summaryStats[k].mean.push(stats.amean());
+                summaryStats[k].stddev.push(stats.stddev());
+              }
 
-  function tableFromRow(
-    row: Partial<
-      Record<
-        TraditionalTestSize | MultipartTestSize | MultipartBigTestSize,
-        number
-      >
-    >
-  ) {
-    return dataFromRow(row).map((v) => v?.toFixed(3) ?? '');
-  }
+              return `
+                <th scope="row" style="font-family: monospace">${k}</th>
+                <td class="nerd">${stats.length}</td>
+                <td class="nerd">${stats.min!.toFixed(3)}</td>
+                <td>${stats.percentile(50).toFixed(3)}</td>
+                <td class="nerd">${stats.max!.toFixed(3)}</td>
+                <td>${stats.amean().toFixed(3)}</td>
+                <td class="nerd">${stats.stddev().toFixed(3)}</td>
+                <td>±${stats.moe().toFixed(3)}</td>
+                ${
+                  prevStats
+                    ? purdyPercent(
+                        (stats.percentile(50) / prevStats.percentile(50) - 1) *
+                          100
+                      )
+                    : '<td>-</td>'
+                }
+              `;
+            })
+            .join(
+              `</tr><tr style="${
+                metricIndex % 2 === 0 ? '' : 'background-color: #eee;'
+              }" data-metric="${m}">`
+            )}
+        </tr>`
+        )
+        .join('')}
+    </tbody>
+    <tfoot>
+      ${keys
+        .map((k, i) => {
+          const stats = summaryStats[k];
+          const prevStats = i === 0 ? null : summaryStats[keys[i - 1]];
+          return `
+        <tr>
+          <th scope="row" colspan="2" style="font-family: monospace; font-weight: bold;">${k}</th>
+          <td class="nerd" />
+          ${
+            prevStats
+              ? `${purdyPercent(
+                  ((stats.min.sum - prevStats.min.sum) / prevStats.min.sum) *
+                    100,
+                  stats.min.sum.toFixed(3) + '<br/>',
+                  true
+                )}${purdyPercent(
+                  ((stats.median.sum - prevStats.median.sum) /
+                    prevStats.median.sum) *
+                    100,
+                  stats.median.sum.toFixed(3) + '<br/>'
+                )}${purdyPercent(
+                  ((stats.max.sum - prevStats.max.sum) / prevStats.max.sum) *
+                    100,
+                  stats.max.sum.toFixed(3) + '<br/>',
+                  true
+                )}${purdyPercent(
+                  ((stats.mean.sum - prevStats.mean.sum) / prevStats.mean.sum) *
+                    100,
+                  stats.mean.sum.toFixed(3) + '<br/>'
+                )}${purdyPercent(
+                  ((stats.stddev.sum - prevStats.stddev.sum) /
+                    prevStats.stddev.sum) *
+                    100,
+                  stats.stddev.sum.toFixed(3) + '<br/>',
+                  true
+                )}<td>-</td><td>-</td>`
+              : `
+                  <td class="nerd">${stats.min.sum.toFixed(3)}</td>
+                  <td>${stats.median.sum.toFixed(3)}</td>
+                  <td class="nerd">${stats.max.sum.toFixed(3)}</td>
+                  <td>${stats.mean.sum.toFixed(3)}</td>
+                  <td class="nerd">${stats.stddev.sum.toFixed(3)}</td>
+                  <td>-</td>
+                  <td>-</td>
+                `
+          }
+        </tr>`;
+        })
+        .join('')}
+    </tfoot>
+  </table>`;
+}
 
-  const tableValues = [
-    [
-      'Upload type',
-      '512k',
-      '5m',
-      '10m',
-      '25m',
-      '50m',
-      '100m',
-      '1g',
-      '1.5g',
-      '2g',
-      '5g',
-    ],
-    ['Traditional', ...tableFromRow(byType.traditional)],
-    ['Multipart (5m chunks)', ...tableFromRow(byType['multipart-5m-chunks'])],
-    ['Multipart (25m chunks)', ...tableFromRow(byType['multipart-25m-chunks'])],
-    ['Multipart (50m chunks)', ...tableFromRow(byType['multipart-50m-chunks'])],
-    [
-      'Multipart (100m chunks)',
-      ...tableFromRow(byType['multipart-100m-chunks']),
-    ],
-    [
-      'Multipart (200m chunks)',
-      ...tableFromRow(byType['multipart-200m-chunks']),
-    ],
-    [
-      'Multipart (500m chunks)',
-      ...tableFromRow(byType['multipart-500m-chunks']),
-    ],
-  ];
+function getMetricInfo(metric: string) {
+  return `
+  <section data-metric="${metric}">
+    <h2 id="${metric}">${metric.replaceAll('|', ' • ')}</h2>
+    <details>
+      <summary>Query</summary>
+      <pre>
+      ${JSON.stringify(
+        {
+          entityType: queries[parseMetricLabel(metric).entityType].entityType,
+          query: queries[parseMetricLabel(metric).entityType].queries.find(
+            (q) => q.label === parseMetricLabel(metric).query
+          )?.queries,
+          fields: queries[parseMetricLabel(metric).entityType].fields.find(
+            (f) => f.label === parseMetricLabel(metric).fields
+          )?.fields,
+        },
+        null,
+        2
+      )}
+      </pre>
+    </details>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Version</th>
+          <th scope="col">Result</th>
+          <th scope="col" class="nerd"># samples</th>
+          <th scope="col" class="nerd">min</th>
+          <th scope="col" class="nerd">Q1</th>
+          <th scope="col">median</th>
+          <th scope="col" class="nerd">Q3</th>
+          <th scope="col" class="nerd">max</th>
+          <th scope="col" class="nerd">range</th>
+          <th scope="col" class="nerd">IQR mean</th>
+          <th scope="col" class="nerd">mean</th>
+          <th scope="col" class="nerd">stddev</th>
+          <th scope="col" class="nerd">MOE</th>
+          <th scope="col">95% CI min mean</th>
+          <th scope="col">95% CI max mean</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${keys
+          .filter((k) => metric in results[k])
+          .map((k) => {
+            const stats = new Stats().push(
+              results[k][metric].map((x) => x / 1000)
+            );
+            return `
+              <tr>
+                <th scope="row" style="font-family: monospace">${k}</th>
+                <td>${descriptions[k][getDescriptionMetricKey(metric)]}</td>
+                <td class="nerd">${stats.length}</td>
+                <td class="nerd">${stats.min!.toFixed(3)}</td>
+                <td class="nerd">${stats.percentile(25).toFixed(3)}</td>
+                <td>${stats.percentile(50).toFixed(3)}</td>
+                <td class="nerd">${stats.percentile(75).toFixed(3)}</td>
+                <td class="nerd">${stats.max!.toFixed(3)}</td>
+                <td class="nerd">${Math.abs(
+                  stats.range()[1] - stats.range()[0]
+                ).toFixed(3)}</td>
+                <td class="nerd">${stats.iqr().amean().toFixed(3)}</td>
+                <td class="nerd">${stats.amean().toFixed(3)}</td>
+                <td class="nerd">${stats.stddev().toFixed(3)}</td>
+                <td class="nerd">±${stats.moe().toFixed(3)}</td>
+                <td>${(stats.amean() - stats.moe()).toFixed(3)}</td>
+                <td>${(stats.amean() + stats.moe()).toFixed(3)}</td>
+              </tr>`;
+          })
+          .join('')}
+      </tbody>
+    </table>
 
-  console.log(
-    table(tableValues, {
-      ...basicTableConfig,
-      columns: [
-        { alignment: 'left' },
-        ...Array(10).fill({ alignment: 'right' }),
-      ],
-    })
-  );
-  await renderChartToFile(
-    {
-      type: 'line',
+    ${renderChart({
+      type: 'boxplot',
       data: {
-        labels: [
-          '512k',
-          '5m',
-          '10m',
-          '25m',
-          '50m',
-          '100m',
-          '1g',
-          '1.5g',
-          '2g',
-          '5g',
-        ],
-        datasets: [
-          {
-            label: 'Traditional',
-            data: dataFromRow(byType.traditional),
-            spanGaps: true,
+        labels: [metric],
+        datasets: keys
+          .filter((k) => metric in results[k])
+          .map((k, i) => ({
+            label: k,
+            backgroundColor: COLORS[i],
             borderColor: 'black',
-            borderWidth: 5,
-          },
-          {
-            label: 'Multipart (5m chunks)',
-            data: dataFromRow(byType['multipart-5m-chunks']),
-            spanGaps: true,
-            borderColor: 'red',
-          },
-          {
-            label: 'Multipart (25m chunks)',
-            data: dataFromRow(byType['multipart-25m-chunks']),
-            spanGaps: true,
-            borderColor: 'orange',
-          },
-          {
-            label: 'Multipart (50m chunks)',
-            data: dataFromRow(byType['multipart-50m-chunks']),
-            spanGaps: true,
-            borderColor: 'yellow',
-          },
-          {
-            label: 'Multipart (100m chunks)',
-            data: dataFromRow(byType['multipart-100m-chunks']),
-            spanGaps: true,
-            borderColor: 'green',
-          },
-          {
-            label: 'Multipart (200m chunks)',
-            data: dataFromRow(byType['multipart-200m-chunks']),
-            spanGaps: true,
-            borderColor: 'blue',
-          },
-          {
-            label: 'Multipart (500m chunks)',
-            data: dataFromRow(byType['multipart-500m-chunks']),
-            spanGaps: true,
-            borderColor: 'purple',
-          },
-        ],
+            borderWidth: 1,
+            outlierColor: 'black',
+            outlierBackgroundColor: 'black',
+            padding: 10,
+            itemRadius: 0,
+            meanBackgroundColor: 'black',
+            data: [results[k][metric].map((x) => x / 1000)],
+          })),
       },
       options: {
-        plugins: {
-          title: {
-            display: true,
-            text: 'Upload Time By Upload Type',
-          },
-        },
+        responsive: false,
+        maintainAspectRatio: false,
+        indexAxis: 'y',
         scales: {
           x: {
-            display: true,
-            title: { display: true, text: 'File size' },
+            beginAtZero: false,
           },
           y: {
-            display: true,
-            type: 'logarithmic',
-            title: { display: true, text: 'Upload time (ms, lower is better)' },
+            beginAtZero: false,
           },
         },
       },
-    },
-    'upload-stats.png'
-  );
+    })}
 
-  await renderChartToFile(
-    {
-      type: 'line',
-      data: {
-        labels: ['512k', '5m', '10m', '25m', '50m', '100m'],
-        datasets: [
-          {
-            label: 'Traditional',
-            data: dataFromRow(byType.traditional).slice(0, 6),
-            spanGaps: true,
-            borderColor: 'black',
-            borderWidth: 5,
-          },
-          {
-            label: 'Multipart (5m chunks)',
-            data: dataFromRow(byType['multipart-5m-chunks']).slice(0, 6),
-            spanGaps: true,
-            borderColor: 'red',
-          },
-          {
-            label: 'Multipart (25m chunks)',
-            data: dataFromRow(byType['multipart-25m-chunks']).slice(0, 6),
-            spanGaps: true,
-            borderColor: 'orange',
-          },
-          {
-            label: 'Multipart (50m chunks)',
-            data: dataFromRow(byType['multipart-50m-chunks']).slice(0, 6),
-            spanGaps: true,
-            borderColor: 'yellow',
-          },
-          {
-            label: 'Multipart (100m chunks)',
-            data: dataFromRow(byType['multipart-100m-chunks']).slice(0, 6),
-            spanGaps: true,
-            borderColor: 'green',
-          },
-        ],
-      },
-      options: {
-        plugins: {
-          title: {
-            display: true,
-            text: 'Upload Time By Upload Type (Truncated)',
-          },
-        },
-        scales: {
-          x: {
-            display: true,
-            title: { display: true, text: 'File size' },
-          },
-          y: {
-            display: true,
-            type: 'logarithmic',
-            title: { display: true, text: 'Upload time (ms, lower is better)' },
-          },
-        },
-      },
-    },
-    'upload-stats-detailed.png'
-  );
-
-  await writeFile(
-    resolve(dir, 'upload-stats.md'),
-    table(tableValues, outputTableConfig)
-      .replaceAll('--|', '--:|')
-      .replace('--:|', '--|') +
-      '\n\n' +
-      '*Times are in milliseconds, lower is better.*' +
-      '\n\n' +
-      '![Chart](upload-stats.png)' +
-      '\n\n' +
-      '![Chart](upload-stats-detailed.png)'
-  );
+    <hr />
+  </section>`;
 }
 
-async function processDetailedMultipartStats() {
-  function dataFromRow(
-    chunkSize: MultipartBigChunkSize,
-    type: 'upload' | 'complete'
-  ) {
-    return [
-      new Stats()
-        .push(results[`upload-multipart-${type}-512k-${chunkSize}` as Key])
-        .amean(),
-      new Stats()
-        .push(results[`upload-multipart-${type}-5m-${chunkSize}` as Key])
-        .amean(),
-      new Stats()
-        .push(results[`upload-multipart-${type}-10m-${chunkSize}` as Key])
-        .amean(),
-      new Stats()
-        .push(results[`upload-multipart-${type}-25m-${chunkSize}` as Key])
-        .amean(),
-      new Stats()
-        .push(results[`upload-multipart-${type}-50m-${chunkSize}` as Key])
-        .amean(),
-      new Stats()
-        .push(results[`upload-multipart-${type}-100m-${chunkSize}` as Key])
-        .amean(),
-      new Stats()
-        .push(results[`upload-multipart-${type}-1g-${chunkSize}` as Key])
-        .amean(),
-      new Stats()
-        .push(results[`upload-multipart-${type}-2g-${chunkSize}` as Key])
-        .amean(),
-      new Stats()
-        .push(results[`upload-multipart-${type}-5g-${chunkSize}` as Key])
-        .amean(),
-    ];
+const result = `
+<!DOCTYPE html>
+<html>
+  <head>
+    <style>
+
+    thead,
+    tfoot {
+      background-color: #ccc;
+    }
+
+    table {
+      border-collapse: collapse;
+      border: 4px double black;
+      font-family: sans-serif;
+      font-size: 0.8rem;
+      letter-spacing: 1px;
+    }
+
+    caption {
+      caption-side: bottom;
+      padding: 10px;
+    }
+
+    th,
+    td {
+      border: 1px solid black;
+      padding: 8px 10px;
+    }
+
+    th {
+      text-align: left;
+    }
+    td {
+      text-align: right;
+      font-family: monospace;
+    }
+
+    body, section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    hr, section {
+      width: 100%;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+    }
+
+    body:not(.show-nerd-cols) .nerd {
+      display: none;
+    }
+
+    body:not(.show-all) [data-metric$="|all"],
+    body:not(.show-query) [data-metric$="|query"],
+    body:not(.show-import-results) [data-metric$="|import-results"] {
+      display: none;
+    }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/@sgratzl/chartjs-chart-boxplot"></script>
+  </head>
+  <body class="show-query">
+    <h1>Results</h1>
+    <h4>All datapoints are in seconds unless otherwise specified</h4>
+
+    <label for="toggle-nerd"><input type="checkbox" id="toggle-nerd" /> Show nerd-only columns</label>
+    <div>
+      <label for="show-all"><input type="checkbox" id="show-all" /> Show total refresh times</label>
+      <label for="show-query"><input type="checkbox" id="show-query" checked="checked" /> Show query-only times</label>
+      <label for="show-import-results"><input type="checkbox" id="show-import-results" /> Show import-only times</label>
+    </div>
+
+    <script>
+      document.getElementById('toggle-nerd').addEventListener('change', (e) => {
+        document.body.classList.toggle('show-nerd-cols', e.target.checked);
+      });
+      document.getElementById('show-all').addEventListener('change', (e) => {
+        document.body.classList.toggle('show-all', e.target.checked);
+      });
+      document.getElementById('show-query').addEventListener('change', (e) => {
+        document.body.classList.toggle('show-query', e.target.checked);
+      });
+      document.getElementById('show-import-results').addEventListener('change', (e) => {
+        document.body.classList.toggle('show-import-results', e.target.checked);
+      });
+    </script>
+    <hr />
+
+    ${await getSummaryTable()}
+    <hr />
+
+
+    ${metrics
+      .filter((m) => m.includes('|'))
+      .map(getMetricInfo)
+      .join('')}
+  </body>
+</html>
+`.trim();
+
+await Bun.write('results.html', result);
+console.log('Done!');
+
+function purdyPercent(
+  percent: number,
+  src: string = '',
+  isNerd: boolean = false
+) {
+  const val =
+    percent >= 0
+      ? `${src}+${percent.toFixed(2)}%`
+      : `${src}${percent.toFixed(2)}%`;
+  const clazz = isNerd ? 'nerd' : '';
+  const template = (color: string) =>
+    `<td style="background-color: ${color}" class="${clazz}">${val}</td>`;
+
+  if (percent > 25) {
+    return template('#E57373; font-weight: bold;');
+  } else if (percent > 10) {
+    return template('#EF9A9A');
+  } else if (percent > 5) {
+    return template('#FFCDD2');
+  } else if (percent > 2) {
+    return template('#FFEBEE');
+  } else if (percent >= 0) {
+    return template('#FFFFFF');
+  } else if (percent >= -2) {
+    return template('#FFFFFF');
+  } else if (percent > -5) {
+    return template('#E8F5E9');
+  } else if (percent > -10) {
+    return template('#C8E6C9');
+  } else if (percent > -15) {
+    return template('#A5D6A7');
+  } else if (percent > -20) {
+    return template('#81C784');
+  } else if (percent > -25) {
+    return template('#66BB6A');
+  } else {
+    return template('#4CAF50');
   }
-
-  await renderChartToFile(
-    {
-      type: 'bar',
-      data: {
-        labels: ['512k', '5m', '10m', '25m', '50m', '100m', '1g', '2g', '5g'],
-        datasets: [
-          {
-            label: '5m chunks upload time',
-            data: dataFromRow('5m', 'upload'),
-            backgroundColor: 'red',
-            stack: '5m chunks',
-          },
-          {
-            label: '5m chunks reconcile time',
-            data: dataFromRow('5m', 'complete'),
-            backgroundColor: 'white',
-            borderWidth: 2,
-            borderColor: 'red',
-            stack: '5m chunks',
-          },
-          {
-            label: '25m chunks upload time',
-            data: dataFromRow('25m', 'upload'),
-            backgroundColor: 'orange',
-            stack: '25m chunks',
-          },
-          {
-            label: '25m chunks reconcile time',
-            data: dataFromRow('25m', 'complete'),
-            backgroundColor: 'white',
-            borderWidth: 2,
-            borderColor: 'orange',
-            stack: '25m chunks',
-          },
-          {
-            label: '50m chunks upload time',
-            data: dataFromRow('50m', 'upload'),
-            backgroundColor: 'yellow',
-            stack: '50m chunks',
-          },
-          {
-            label: '50m chunks reconcile time',
-            data: dataFromRow('50m', 'complete'),
-            backgroundColor: 'white',
-            borderWidth: 2,
-            borderColor: 'yellow',
-            stack: '50m chunks',
-          },
-          {
-            label: '100m chunks upload time',
-            data: dataFromRow('100m', 'upload'),
-            backgroundColor: 'green',
-            stack: '100m chunks',
-          },
-          {
-            label: '100m chunks reconcile time',
-            data: dataFromRow('100m', 'complete'),
-            backgroundColor: 'white',
-            borderWidth: 2,
-            borderColor: 'green',
-            stack: '100m chunks',
-          },
-          {
-            label: '200m chunks upload time',
-            data: dataFromRow('200m', 'upload'),
-            backgroundColor: 'blue',
-            stack: '200m chunks',
-          },
-          {
-            label: '200m chunks reconcile time',
-            data: dataFromRow('200m', 'complete'),
-            backgroundColor: 'white',
-            borderWidth: 2,
-            borderColor: 'blue',
-            stack: '200m chunks',
-          },
-          {
-            label: '500m chunks upload time',
-            data: dataFromRow('500m', 'upload'),
-            backgroundColor: 'purple',
-            stack: '500m chunks',
-          },
-          {
-            label: '500m chunks reconcile time',
-            data: dataFromRow('500m', 'complete'),
-            backgroundColor: 'white',
-            borderWidth: 2,
-            borderColor: 'purple',
-            stack: '500m chunks',
-          },
-        ],
-      },
-      options: {
-        plugins: {
-          title: {
-            display: true,
-            text: 'Upload Time By Chunk Size',
-          },
-        },
-        scales: {
-          x: {
-            display: true,
-            title: { display: true, text: 'File size' },
-            stacked: true,
-          },
-          y: {
-            display: true,
-            type: 'logarithmic',
-            title: { display: true, text: 'Upload time (ms, lower is better)' },
-            stacked: true,
-          },
-        },
-      },
-    },
-    'multipart-chunk-size-comparison.png'
-  );
-
-  const tableData = [
-    [
-      'Chunk size',
-      'Stage',
-      '512k',
-      '5m',
-      '10m',
-      '25m',
-      '50m',
-      '100m',
-      '1g',
-      '2g',
-      '5g',
-    ],
-    [
-      '5m',
-      'Upload',
-      ...dataFromRow('5m', 'upload').map((x) => (isNaN(x) ? '' : x.toFixed(3))),
-    ],
-    [
-      '5m',
-      'Reconcile',
-      ...dataFromRow('5m', 'complete').map((x) =>
-        isNaN(x) ? '' : x.toFixed(3)
-      ),
-    ],
-    [
-      '25m',
-      'Upload',
-      ...dataFromRow('25m', 'upload').map((x) =>
-        isNaN(x) ? '' : x.toFixed(3)
-      ),
-    ],
-    [
-      '25m',
-      'Reconcile',
-      ...dataFromRow('25m', 'complete').map((x) =>
-        isNaN(x) ? '' : x.toFixed(3)
-      ),
-    ],
-    [
-      '50m',
-      'Upload',
-      ...dataFromRow('50m', 'upload').map((x) =>
-        isNaN(x) ? '' : x.toFixed(3)
-      ),
-    ],
-    [
-      '50m',
-      'Reconcile',
-      ...dataFromRow('50m', 'complete').map((x) =>
-        isNaN(x) ? '' : x.toFixed(3)
-      ),
-    ],
-    [
-      '100m',
-      'Upload',
-      ...dataFromRow('100m', 'upload').map((x) =>
-        isNaN(x) ? '' : x.toFixed(3)
-      ),
-    ],
-    [
-      '100m',
-      'Reconcile',
-      ...dataFromRow('100m', 'complete').map((x) =>
-        isNaN(x) ? '' : x.toFixed(3)
-      ),
-    ],
-    [
-      '200m',
-      'Upload',
-      ...dataFromRow('200m', 'upload').map((x) =>
-        isNaN(x) ? '' : x.toFixed(3)
-      ),
-    ],
-    [
-      '200m',
-      'Reconcile',
-      ...dataFromRow('200m', 'complete').map((x) =>
-        isNaN(x) ? '' : x.toFixed(3)
-      ),
-    ],
-    [
-      '500m',
-      'Upload',
-      ...dataFromRow('500m', 'upload').map((x) =>
-        isNaN(x) ? '' : x.toFixed(3)
-      ),
-    ],
-    [
-      '500m',
-      'Reconcile',
-      ...dataFromRow('500m', 'complete').map((x) =>
-        isNaN(x) ? '' : x.toFixed(3)
-      ),
-    ],
-  ];
-
-  console.log('Upload vs reconcile times by chunk size:');
-  console.log(
-    table(tableData, {
-      ...basicTableConfig,
-      columns: [
-        { alignment: 'left' },
-        { alignment: 'left' },
-        ...Array(11).fill({ alignment: 'right' }),
-      ],
-    })
-  );
-
-  await writeFile(
-    resolve(dir, 'multipart-chunk-size-comparison.md'),
-    table(tableData, {
-      ...outputTableConfig,
-      columns: [
-        { alignment: 'left' },
-        { alignment: 'left' },
-        ...Array(11).fill({ alignment: 'right' }),
-      ],
-    })
-      .replaceAll('--|', '--:|')
-      .replace('--:|', '--|')
-      .replace('--:|', '--|') +
-      '\n\n' +
-      '*Times are in milliseconds, lower is better.*' +
-      '\n\n' +
-      '![Chart](multipart-chunk-size-comparison.png)'
-  );
 }
-
-async function run() {
-  await processBasicStats();
-  await fullUploadStats();
-  await processDetailedMultipartStats();
-}
-
-run();

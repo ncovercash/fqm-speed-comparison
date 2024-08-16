@@ -17,6 +17,11 @@ TENANT=fs09000000 \
 OKAPI_URL=http://okapi:9130 \
 QUERY_VERSION=1 \
 LABEL=LABEL_HERE \
+PG_HOST=... \
+PG_PORT=... \
+PG_DATABASE=... \
+PG_USER=... \
+PG_PASSWORD=... \
 bun benchmark.ts
 ```
 

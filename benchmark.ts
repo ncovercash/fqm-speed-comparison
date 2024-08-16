@@ -1,6 +1,9 @@
 import { writeFile } from 'fs';
+import { parse, toSeconds } from 'iso8601-duration';
 import json5 from 'json5';
 import kyBase from 'ky-universal';
+import postgres from 'postgres';
+import { exit } from 'process';
 import { promisify } from 'util';
 
 const USERNAME = process.env.USER ?? 'folio';
@@ -9,6 +12,14 @@ const TENANT = process.env.TENANT ?? 'fs09000000';
 const OKAPI_URL = process.env.OKAPI_URL ?? 'http://localhost:9130';
 const LABEL = process.env.LABEL ?? 'results';
 const QUERY_VERSION = +(process.env.QUERY_VERSION ?? 0);
+
+const pg = postgres({
+  host: process.env.PG_HOST ?? 'localhost',
+  port: +(process.env.PG_PORT ?? 5432),
+  database: process.env.PG_DATABASE ?? 'folio',
+  username: process.env.PG_USER ?? 'folio',
+  password: process.env.PG_PASSWORD ?? '',
+});
 
 const resultsFile = `raw-results/${LABEL}.json`;
 const descriptionsFile = `raw-results/${LABEL}-descriptions.json`;
@@ -112,6 +123,11 @@ if (await Bun.file(descriptionsFile).exists()) {
   descriptions = JSON.parse(await Bun.file(descriptionsFile).text());
 }
 
+async function save() {
+  await promisify(writeFile)(resultsFile, JSON.stringify(measures));
+  await promisify(writeFile)(descriptionsFile, JSON.stringify(descriptions));
+}
+
 async function measure<T, R>(
   name: string,
   run: (
@@ -128,8 +144,6 @@ async function measure<T, R>(
 ) {
   measures[name] = measures[name] ?? [];
 
-  let overallStart = Date.now();
-
   process.stdout.write(`${name}: starting`);
 
   let res: Awaited<T> | undefined = undefined;
@@ -144,8 +158,13 @@ async function measure<T, R>(
   }
 
   let description: string | undefined = undefined;
+  let overallStart = Date.now();
+  let initialLength = measures[name].length;
 
-  while (measures[name].length < 5 || Date.now() - overallStart < maxTimeMs) {
+  while (
+    measures[name].length < 5 + initialLength ||
+    Date.now() - overallStart < maxTimeMs
+  ) {
     const start = Date.now();
     let result: R;
     if ('setup' in run) {
@@ -164,13 +183,15 @@ async function measure<T, R>(
     process.stdout.clearLine(0);
     process.stdout.cursorTo(0);
     process.stdout.write(
-      `${name} (${description}): ${measures[name].length} samples, last ${
-        end - start
-      }ms`
+      `${name} (${description}): ${
+        measures[name].length - initialLength
+      } samples, last ${end - start}ms`
     );
   }
 
   if ('teardown' in run) {
+    await save();
+
     process.stdout.clearLine(0);
     process.stdout.cursorTo(0);
     process.stdout.write(`${name}: tearing down`);
@@ -180,7 +201,7 @@ async function measure<T, R>(
     process.stdout.write(`${name}: teardown complete`);
   }
 
-  descriptions[name] = description ?? '';
+  descriptions[name.replace(/\|all$/, '')] = description ?? '';
 
   process.stdout.clearLine(0);
   process.stdout.cursorTo(0);
@@ -190,8 +211,7 @@ async function measure<T, R>(
     ).toFixed(2)}ms (${measures[name].length} samples)`
   );
 
-  await promisify(writeFile)(resultsFile, JSON.stringify(measures));
-  await promisify(writeFile)(descriptionsFile, JSON.stringify(descriptions));
+  await save();
 }
 
 async function measureEntityTypes() {
@@ -215,7 +235,7 @@ async function measureEntityTypes() {
         fn: () => ky.get(`entity-types/${id}`),
         describe: () => '',
       },
-      1000
+      5000
     );
   }
 }
@@ -250,7 +270,7 @@ async function measureRefreshes() {
     delete (query as { _version?: string })._version;
 
     await measure(
-      label + '|total',
+      label + '|all',
       {
         setup: async () => {
           const list = await (
@@ -280,13 +300,33 @@ async function measureRefreshes() {
         },
         describe: (count) => `${count} records`,
         teardown: async (list) => {
+          const refreshes = await pg`
+            SELECT metadata
+            FROM ${pg.unsafe(TENANT + '_mod_lists.list_refresh_details')}
+            WHERE list_id = ${list.id} AND status = 'SUCCESS';`;
+
+          for (const {
+            metadata: { WAIT_FOR_QUERY_COMPLETION, IMPORT_RESULTS },
+          } of refreshes) {
+            measures[label + '|query'] = measures[label + '|query'] ?? [];
+            measures[label + '|query'].push(
+              toSeconds(parse(WAIT_FOR_QUERY_COMPLETION)) * 1000
+            );
+
+            measures[label + '|import-results'] =
+              measures[label + '|import-results'] ?? [];
+            measures[label + '|import-results'].push(
+              toSeconds(parse(IMPORT_RESULTS)) * 1000
+            );
+          }
+
           await ky.delete(`lists/${list.id}`);
         },
       },
-      300000
+      60000
     );
   }
 }
 
-// await measureEntityTypes();
-await measureRefreshes();
+await measureEntityTypes();
+// await measureRefreshes();
