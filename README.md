@@ -1,5 +1,7 @@
 # fqm-speed-comparison
 
+# Moved to [mod-fqm-manager itself](https://github.com/folio-org/mod-fqm-manager/tree/master/fqm-speed-comparison)
+
 This script runs a series of benchmarks against instance(s) of [mod-fqm-manager](https://github.com/folio-org/mod-fqm-manager) to compare speeds across versions and time.
 
 ## Requirements
